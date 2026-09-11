@@ -1,6 +1,10 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "client_session.h"
 #include "member_api.h"
+#include "score_cache.h"
+#include "score_types.h"
+#include "shadnet.pb.h"
 
 #include <cmath>
 
@@ -29,7 +33,6 @@ constexpr int BlockSeconds = 900;
 
 constexpr int SessionMinutes = 24 * 60;
 
-// PlayStation NP IDs are at most 16 characters.
 constexpr int MaxNpidLength = 16;
 constexpr int MinPasswordLength = 8;
 constexpr int MaxPasswordLength = 200;
@@ -103,7 +106,6 @@ bool LooksLikeEmail(const QString& email) {
            email.size() <= 254;
 }
 
-// What an avatar URL is allowed to be.
 constexpr int MaxAvatarUrlLength = 500;
 
 bool ValidAvatarUrl(const QString& url) {
@@ -143,6 +145,8 @@ QHttpServerResponse MemberApiServer::ApiKeyError(const QHttpServerRequest& req) 
     const bool absent = req.value("X-Member-Api-Key").isEmpty();
     qWarning().nospace().noquote() << "MemberApi: rejected request from " << PeerOf(req)
                                    << " — key " << (absent ? "not supplied" : "did not match");
+    // Deliberately vague about the key itself, and identical whether it was
+    // absent or wrong, so probing tells an unknown caller nothing.
     return JsonError(QHttpServerResponse::StatusCode::Unauthorized, ERR_BAD_API_KEY,
                      QStringLiteral("This server does not accept requests from this client."));
 }
@@ -262,7 +266,6 @@ std::optional<MemberApiServer::MemberSession> MemberApiServer::Authenticate(
 }
 
 // Throttling
-
 bool MemberApiServer::IsThrottled(const QString& peer, int& retryAfterSecs) {
     QWriteLocker lk(&m_failuresLock);
     auto it = m_failures.find(peer);
@@ -501,13 +504,17 @@ void MemberApiServer::RegisterRoutes() {
                       body.insert(QStringLiteral("clientVersion"), row->clientVersion);
                       body.insert(QStringLiteral("clientVersionAt"),
                                   static_cast<qint64>(row->clientVersionAt));
+                      // Not on the admin row, so read separately. This is the
+                      // avatar the game shows next to the account.
                       body.insert(QStringLiteral("avatarUrl"),
                                   m_db->GetAvatarUrl(session->userId).value_or(QString()));
+                      // Deliberately not included: ban reason, admin flag, other accounts.
+                      // This endpoint answers "who am I", not "what does the server think
+                      // of me".
                       return JsonOk(body);
                   });
 
-    // GET /member/v1/me/trophies — the caller's own trophies, with names and
-    // points where the game's configuration has been imported.
+    // GET /member/v1/me/trophies
     m_http->route(
         "/member/v1/me/trophies", QHttpServerRequest::Method::Get,
         [this](const QHttpServerRequest& req) -> QHttpServerResponse {
@@ -615,6 +622,48 @@ void MemberApiServer::RegisterRoutes() {
             return JsonOk(body);
         });
 
+    // GET /member/v1/me/scores
+    m_http->route("/member/v1/me/scores", QHttpServerRequest::Method::Get,
+                  [this](const QHttpServerRequest& req) -> QHttpServerResponse {
+                      if (!CheckApiKey(req))
+                          return ApiKeyError(req);
+
+                      const auto session = Authenticate(req);
+                      if (!session)
+                          return JsonError(QHttpServerResponse::StatusCode::Unauthorized,
+                                           ERR_UNAUTHORIZED, QStringLiteral("Sign in first."));
+
+                      QJsonArray scores;
+                      for (const auto& row : m_db->ListUserScores(session->userId)) {
+                          QJsonObject o;
+                          o.insert(QStringLiteral("commid"), row.comId);
+                          o.insert(QStringLiteral("name"), row.titleName);
+                          o.insert(QStringLiteral("boardId"), row.boardId);
+                          o.insert(QStringLiteral("characterId"), row.characterId);
+                          o.insert(QStringLiteral("score"), static_cast<qint64>(row.score));
+                          o.insert(QStringLiteral("recordedAt"),
+                                   static_cast<qint64>(ShadNetTimestampToUnix(
+                                       static_cast<uint64_t>(row.timestamp))));
+                          int rank = -1;
+                          if (m_shared && m_shared->scoreCache) {
+                              const auto resp = m_shared->scoreCache->GetScoreByIds(
+                                  row.comId, static_cast<uint32_t>(row.boardId),
+                                  {{session->userId, row.characterId}}, /*withComment=*/false,
+                                  /*withGameInfo=*/false);
+                              if (resp.rankarray_size() > 0)
+                                  rank = static_cast<int>(resp.rankarray(0).rank());
+                          }
+                          o.insert(QStringLiteral("rank"), rank);
+                          scores.append(o);
+                      }
+
+                      QJsonObject body;
+                      body.insert(QStringLiteral("npid"), session->npid);
+                      body.insert(QStringLiteral("total"), scores.size());
+                      body.insert(QStringLiteral("scores"), scores);
+                      return JsonOk(body);
+                  });
+
     // POST /member/v1/me/avatar — { url }
     m_http->route(
         "/member/v1/me/avatar", QHttpServerRequest::Method::Post,
@@ -678,6 +727,7 @@ void MemberApiServer::RegisterRoutes() {
                                  QStringLiteral("Choose a password of at least %1 characters.")
                                      .arg(MinPasswordLength));
             }
+
             if (!m_db->CheckUser(session->npid, current, QString(), false)) {
                 RegisterFailure(PeerOf(req));
                 return JsonError(QHttpServerResponse::StatusCode::Unauthorized, ERR_UNAUTHORIZED,

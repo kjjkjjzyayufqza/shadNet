@@ -831,6 +831,33 @@ QList<AuditRow> Database::ListAudit(int limit, int offset) {
     return rows;
 }
 
+QList<Database::UserScoreRow> Database::ListUserScores(int64_t userId) {
+    QList<UserScoreRow> out;
+    QSqlQuery q(m_db);
+    // LEFT JOIN so a score still appears for a game whose name was never
+    // imported — the com id is shown instead.
+    q.prepare("SELECT s.communication_id, COALESCE(tn.title_name,''), s.board_id, "
+              "       s.character_id, s.score, s.timestamp "
+              "FROM score s "
+              "LEFT JOIN title_name tn ON tn.communication_id = s.communication_id "
+              "WHERE s.user_id = ? "
+              "ORDER BY s.timestamp DESC, s.communication_id ASC, s.board_id ASC");
+    q.addBindValue(static_cast<qlonglong>(userId));
+    if (!Exec(q))
+        return out;
+    while (q.next()) {
+        UserScoreRow r;
+        r.comId = q.value(0).toString();
+        r.titleName = q.value(1).toString();
+        r.boardId = q.value(2).toInt();
+        r.characterId = q.value(3).toInt();
+        r.score = q.value(4).toLongLong();
+        r.timestamp = q.value(5).toLongLong();
+        out.append(r);
+    }
+    return out;
+}
+
 bool Database::SetAvatarUrl(int64_t userId, const QString& avatarUrl) {
     // avatar_url is NOT NULL, and an account with no picture is not a state the
     // rest of the server expects; callers wanting the default should pass it.
@@ -1425,8 +1452,6 @@ QList<Database::TrophyPlayerRow> Database::ListTopTrophyPlayers(const QString& c
     if (limit <= 0)
         return out;
     QSqlQuery q(m_db);
-    // INNER JOIN on purpose: a public leaderboard should not list rows whose
-    // account no longer exists.
     q.prepare("SELECT t.user_id, a.username, COUNT(*), MAX(t.earned_at) "
               "FROM user_trophies t JOIN account a ON a.user_id = t.user_id "
               "WHERE t.communication_id = ? "

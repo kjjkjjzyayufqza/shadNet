@@ -207,7 +207,6 @@ public:
     bool ClearTitleName(const QString& comId);
 
     // Leaderboard moderation
-    // One board that currently holds scores.
     struct BoardRow {
         QString comId;
         QString titleName;
@@ -233,6 +232,18 @@ public:
     QList<BoardScoreRow> ListBoardScores(const QString& comId, uint32_t boardId, int limit,
                                          int offset);
     int CountBoardScores(const QString& comId, uint32_t boardId);
+
+    // One score this account has posted, with the game's name when known.
+    struct UserScoreRow {
+        QString comId;
+        QString titleName; // empty when no name has been imported
+        int32_t boardId = 0;
+        int32_t characterId = 0;
+        int64_t score = 0;
+        int64_t timestamp = 0;
+    };
+    // Every score an account holds, newest first.
+    QList<UserScoreRow> ListUserScores(int64_t userId);
 
     // Removes exactly one posted score.
     bool DeleteScore(const QString& comId, uint32_t boardId, int64_t userId, int32_t characterId,

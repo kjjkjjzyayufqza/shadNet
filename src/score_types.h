@@ -33,7 +33,13 @@ struct ScoreEntry {
     QString npid;
 };
 
-// timestamp
+inline int64_t ShadNetTimestampToUnix(uint64_t ticks) {
+    constexpr uint64_t UNIX_TO_CE_US = 62'135'596'800ULL * 1'000'000ULL;
+    if (ticks < UNIX_TO_CE_US)
+        return 0;
+    return static_cast<int64_t>((ticks - UNIX_TO_CE_US) / 1'000'000ULL);
+}
+
 inline uint64_t ShadNetTimestamp() {
     constexpr uint64_t UNIX_TO_CE_US = 62'135'596'800ULL * 1'000'000ULL;
     auto now = std::chrono::system_clock::now();

@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "score_types.h"
 #include "stats_server.h"
 
 #include "version.h"
@@ -44,6 +45,7 @@ QJsonArray ranksToJson(const shadnet::GetScoreResponse& resp) {
         o.insert("pc_id", r.pcid());
         o.insert("score", static_cast<qint64>(r.score()));
         o.insert("record_date", static_cast<qint64>(r.recorddate()));
+        o.insert("recorded_at", static_cast<qint64>(ShadNetTimestampToUnix(r.recorddate())));
         o.insert("has_game_data", r.hasgamedata());
         o.insert("account_id", static_cast<qint64>(r.accountid()));
         arr.append(o);
@@ -240,6 +242,7 @@ QByteArray StatsServer::BuildComIdScoreJson(const QString& comId) const {
         b.insert("board_id", static_cast<qint64>(boardId));
         b.insert("total_record", static_cast<qint64>(resp.totalrecord()));
         b.insert("last_sort_date", static_cast<qint64>(resp.lastsortdate()));
+        b.insert("sorted_at", static_cast<qint64>(ShadNetTimestampToUnix(resp.lastsortdate())));
         b.insert("ranks", ranksToJson(resp));
         boardsArr.append(b);
     }
@@ -256,6 +259,7 @@ QByteArray StatsServer::BuildBoardScoreJson(const QString& comId, uint32_t board
     root.insert("board_id", static_cast<qint64>(boardId));
     root.insert("total_record", static_cast<qint64>(resp.totalrecord()));
     root.insert("last_sort_date", static_cast<qint64>(resp.lastsortdate()));
+    root.insert("sorted_at", static_cast<qint64>(ShadNetTimestampToUnix(resp.lastsortdate())));
     root.insert("ranks", ranksToJson(resp));
     return toJson(root);
 }
@@ -282,7 +286,6 @@ QString RarityBand(double percent) {
     return QStringLiteral("veryrare");
 }
 
-// Grade counts as a JSON object, used for both a player and a whole trophy set.
 QJsonObject GradesJson(int bronze, int silver, int gold, int platinum) {
     QJsonObject g;
     g.insert("bronze", bronze);
@@ -359,7 +362,6 @@ QByteArray StatsServer::BuildTrophyStatsJson(const QString& comId) const {
     root.insert("setGrades", GradesJson(shape.bronze, shape.silver, shape.gold, shape.platinum));
     root.insert("setPoints", TrophyPoints(shape.bronze, shape.silver, shape.gold, shape.platinum));
     root.insert("unlocks", unlocks);
-    // Groups let DLC be shown separately instead of mixed into the base list.
     QJsonArray groups;
     for (const auto& g : db.ListTrophyGroups(comId)) {
         QJsonObject o;
