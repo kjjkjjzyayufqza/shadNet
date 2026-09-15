@@ -61,6 +61,19 @@ void WebApiServer::RegisterRoutes() {
                                    QHttpServerResponse::StatusCode::Ok};
     });
 
+    // Bandwidth test (libSceNpUtility sceNpBandwidthTest*). The client times an upload POST and a
+    // fixed 2 MiB download; the payload content is irrelevant.
+    m_http->route("/networktest/post", QHttpServerRequest::Method::Post,
+                  [](const QHttpServerRequest&) {
+                      return QHttpServerResponse(QHttpServerResponse::StatusCode::Ok);
+                  });
+    m_http->route("/networktest/get_2m", QHttpServerRequest::Method::Get,
+                  [](const QHttpServerRequest&) {
+                      static const QByteArray payload(2 * 1024 * 1024, '\0');
+                      return QHttpServerResponse{"application/octet-stream", payload,
+                                                 QHttpServerResponse::StatusCode::Ok};
+                  });
+
     // user routes
     WebApiRoutes::RegisterUserRoutes(*m_http, *m_db, *m_shared);
     WebApiRoutes::RegisterProfileRoutes(*m_http, *m_db, *m_shared);

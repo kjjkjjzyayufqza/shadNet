@@ -72,9 +72,17 @@ bool ShadNetServer::Start(ConfigManager* config) {
     // Start matching/STUN UDP server only when Matching2 is enabled.
     if (config->IsMatching2Enabled()) {
         m_stunServer = new StunServer(&m_shared, this);
-        uint16_t udpPort = static_cast<uint16_t>(config->GetMatchingUdpPort().toUInt());
-        if (!m_stunServer->Start(addr, udpPort))
+        const uint16_t udpPort = static_cast<uint16_t>(config->GetMatchingUdpPort().toUInt());
+        const uint16_t altPort = static_cast<uint16_t>(config->GetStunAltPort().toUInt());
+        const bool relay = config->IsSignalingRelayEnabled();
+        if (m_stunServer->Start(addr, udpPort, altPort, relay)) {
+            // Clients are told what the listeners actually provide, not what was configured: a
+            // port that failed to bind would have them probing a dead endpoint forever.
+            m_shared.matching.stunAltPort.store(m_stunServer->AltPort());
+            m_shared.matching.signalingRelay.store(m_stunServer->RelayEnabled());
+        } else {
             qWarning() << "STUN UDP listen failed on port" << udpPort;
+        }
     } else {
         qInfo() << "Matching2 disabled; STUN UDP listener not started";
     }
@@ -273,6 +281,12 @@ bool ShadNetServer::LoadWorldsCfg(const QString& path) {
         wc.lobbiesNum = parts[3].trimmed().toUInt(&ok);
         if (!ok)
             return false;
+        if (wc.lobbiesNum > MAX_LOBBIES_PER_WORLD) {
+            qWarning() << "worlds.cfg: lobbies_num" << wc.lobbiesNum << "for group" << group
+                       << "world" << wc.worldId << "exceeds the" << MAX_LOBBIES_PER_WORLD
+                       << "lobby slots titles index by lobby id";
+            return false;
+        }
         wc.maxLobbyMembersNum = parts[4].trimmed().toUInt(&ok);
         if (!ok)
             return false;

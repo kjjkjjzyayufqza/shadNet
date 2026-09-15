@@ -1,6 +1,7 @@
 /.vs/*
 /out/*
 /build/*
+/dist/*
 /clientsample/.vs/*
 /clientsample/out/*
 /clientsample/build2/*

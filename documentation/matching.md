@@ -143,6 +143,8 @@ bloodborne | 1 | 1 | 0 | 0
 
 `[groups]` maps title ids to a shared matching key. `[worlds]` declares the worlds for a key. A title id not listed in `[groups]` keys by its own title id; its worlds (if any) are listed under that title id as the key.
 
+GUNDAM VERSUS (`CUSA08379`) and MAXIBOOST ON (`CUSA15006`) are not in `[groups]`; they each need world ids **1 through 10** with `server_id=1`. One row (or the built-in single-world fallback) makes those titles abort with `std::out_of_range`. Keep `lobbies_num` at 0 until the lobby path is complete. The repo-root `worlds.cfg` is the packaging source of truth.
+
 ---
 
 ## Commands

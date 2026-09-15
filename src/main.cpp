@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2019-2026 rpcsn Project
 // SPDX-FileCopyrightText: Copyright 2026 shadNet Project
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <cstdio>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
@@ -13,6 +14,11 @@
 #include "webapi_server.h"
 
 int main(int argc, char* argv[]) {
+    // Qt logs through stderr, which the C runtime fully buffers as soon as it is redirected to a
+    // file or a pipe. A server that dies mid-startup would then leave a log ending several lines
+    // before the failure, which is exactly when the log matters most.
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
     QLoggingCategory::setFilterRules(QStringLiteral("*.debug=false\n*.info=true\n*.warning=true"));
     qSetMessagePattern(QStringLiteral("%{time yyyy-MM-dd HH:mm:ss.zzz}  "
                                       "%{if-debug}DEBUG%{endif}"

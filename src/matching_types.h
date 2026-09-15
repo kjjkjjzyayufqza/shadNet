@@ -13,6 +13,26 @@
 #include <QVector>
 #include "matching.h"
 
+// What the STUN listeners observed for one account. Two observations from two different server
+// ports are what separate a NAT that keeps one mapping per socket (punchable) from one that picks
+// a fresh mapping per destination (not punchable without a relay).
+struct UdpEndpoint {
+    QString addr;
+    uint16_t port = 0;    // mapping seen by the primary STUN port
+    uint16_t altPort = 0; // mapping seen by the alternate STUN port
+    uint8_t natType = 0;  // 0 undetermined, 2 endpoint-independent, 3 endpoint-dependent
+    qint64 lastSeenMs = 0;
+
+    // Endpoints go stale: a client that reconnects from another network keeps its account but
+    // gets a new mapping, and handing the old one out sends the handshake into a black hole.
+    bool IsFresh(qint64 nowMs, qint64 ttlMs) const {
+        return port != 0 && lastSeenMs != 0 && nowMs - lastSeenMs <= ttlMs;
+    }
+};
+
+// A client pings every 5 s, so anything older than this means it stopped talking to us.
+constexpr qint64 UDP_ENDPOINT_TTL_MS = 60'000;
+
 struct IntAttrSlot {
     bool set = false;
     uint16_t attrId = 0;
@@ -188,12 +208,25 @@ struct Room {
     }
 };
 
+// libSceNpMatching2 rejects any range filter asking for more than this many results at once.
+constexpr uint32_t RANGE_FILTER_MAX = 20;
+
+// Titles index a fixed 64-entry lobby array by ((lobbyId >> 16) & 0xFFFF) - 1 and throw
+// std::out_of_range outside 1..64, so a world may not declare more lobbies than that.
+constexpr uint32_t MAX_LOBBIES_PER_WORLD = 64;
+
 struct WorldConfig {
     uint32_t worldId = 0;
     uint16_t serverId = 1;
     uint32_t lobbiesNum = 0;
     uint32_t maxLobbyMembersNum = 0;
 };
+
+// Keeps the lobby number in bits 16..31 as the titles above require, and the world in the upper
+// half so ids stay unique across worlds.
+inline uint64_t MakeLobbyId(uint32_t worldId, uint32_t lobbyIndex) {
+    return (static_cast<uint64_t>(worldId) << 32) | (static_cast<uint64_t>(lobbyIndex) << 16);
+}
 
 inline uint qHash(const QPair<QString, QString>& key, uint seed = 0) {
     return qHash(key.first, seed) ^ qHash(key.second, seed);
@@ -217,5 +250,10 @@ struct MatchingSharedState {
     QHash<QString, QString> titleGroups;
 
     mutable QReadWriteLock udpLock;
-    QHash<QString, QPair<QString, uint16_t>> udpExt;
+    QHash<QString, UdpEndpoint> udpExt;
+
+    // What the UDP listeners actually managed to provide, as opposed to what the config asked
+    // for: clients are told these, so a failed alternate bind must not be advertised.
+    std::atomic<uint16_t> stunAltPort{0};
+    std::atomic<bool> signalingRelay{false};
 };

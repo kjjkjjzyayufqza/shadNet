@@ -32,6 +32,11 @@ message SetAppearOfflineRequest {
 message ServerFeaturesReply {
     bool matching2_enabled = 1;
     bool trophies_enabled = 2;
+    // Signaling relay: when set, the STUN listener also forwards P2P datagrams between two
+    // registered endpoints, which is the only way two symmetric-NAT peers can reach each other.
+    bool signaling_relay_enabled = 3;
+    // Second STUN port used to classify NAT mapping behaviour; 0 when the server has none.
+    uint32 stun_alt_port = 4;
 }
 
 message FriendEntry {
@@ -353,6 +358,9 @@ message JoinRoomRequest {
     MatchingUserIdKind user_id_kind = 9;
     repeated string blocked_online_ids = 10;
     repeated uint64 blocked_account_ids = 11;
+    // The password the joiner typed. room_password_present only says a password was supplied, so
+    // without these bytes the server has nothing to compare and the room is open to anyone.
+    bytes  room_password        = 12;
 }
 
 message LeaveRoomRequest {
@@ -501,11 +509,34 @@ message GetWorldInfoListReply {
     repeated MatchingWorld worlds = 1;
 }
 
+message MatchingLobby {
+    uint32 server_id      = 1;
+    uint32 world_id       = 2;
+    uint64 lobby_id       = 3;
+    uint32 max_slot       = 4;
+    uint32 cur_member_num = 5;
+    uint32 flag_attr      = 6;
+}
+
+message GetLobbyInfoListRequest {
+    uint32 world_id           = 1;
+    uint32 range_filter_start = 2;
+    uint32 range_filter_max   = 3;
+}
+
+message GetLobbyInfoListReply {
+    uint32 range_start    = 1;
+    uint32 range_total    = 2;
+    repeated MatchingLobby lobbies = 3;
+}
+
 message RequestSignalingInfosReply {
     string target_npid      = 1;
     string target_ip        = 2;
     uint32 target_port      = 3;
     uint32 target_member_id = 4;
+    // NAT type the target reported through its STUN pings (0 unknown, 1 open, 2 cone, 3 strict).
+    uint32 target_nat_type  = 5;
 }
 
 message LeaveRoomReply            { uint64 room_id = 1; }

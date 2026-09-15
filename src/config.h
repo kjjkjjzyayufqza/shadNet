@@ -30,6 +30,16 @@ public:
         QReadLocker lk(&m_lock);
         return m_webapiPort;
     }
+    /// Second UDP port used only to classify client NAT types. "0" disables the listener.
+    QString GetStunAltPort() const {
+        QReadLocker lk(&m_lock);
+        return m_stunAltPort;
+    }
+    /// Forward P2P datagrams between two registered endpoints when they cannot punch a hole.
+    bool IsSignalingRelayEnabled() const {
+        QReadLocker lk(&m_lock);
+        return m_signalingRelayEnabled;
+    }
     bool IsStatsEnabled() const {
         QReadLocker lk(&m_lock);
         return m_statsEnabled;
@@ -159,7 +169,9 @@ private:
     QString m_host = "0.0.0.0";
     QString m_unsecured_port = "31313";
     QString m_matchingUdpPort = "31314";
+    QString m_stunAltPort = "31316";
     QString m_webapiPort = "31315";
+    bool m_signalingRelayEnabled = true;
     bool m_statsEnabled = true;
     bool m_matching2Enabled = false;
     bool m_trophiesEnabled = true;

@@ -38,6 +38,14 @@ bool AttrWanted(const QVector<uint16_t>& requestedAttrIds, uint16_t attrId) {
     return requestedAttrIds.isEmpty() || requestedAttrIds.contains(attrId);
 }
 
+// MBON CreateJoinRoom always passes an 8-byte session-password pointer, often all
+// zeros, even for an open player-match room. Join from search leaves the pointer
+// null, so a byte-for-byte compare of "8 zeros" vs "empty" rejects a public room.
+bool IsBlankRoomPassword(const QByteArray& pw) {
+    return pw.isEmpty() ||
+           std::all_of(pw.cbegin(), pw.cend(), [](char c) { return c == '\0'; });
+}
+
 template <typename Request>
 QVector<uint16_t> RequestedAttrIds(const Request& req) {
     QVector<uint16_t> attrIds;
@@ -388,19 +396,40 @@ void ClientSession::SendRoomEventToTarget(uint64_t roomId, uint32_t event, uint3
     SendMatchingNotification(NotificationType::RoomEvent, payload, targetNpid);
 }
 
+uint8_t ClientSession::SelfNatType() const {
+    QReadLocker lk(&m_shared->matching.udpLock);
+    const auto it = m_shared->matching.udpExt.find(m_info.npid);
+    return it == m_shared->matching.udpExt.end() ? 0 : it.value().natType;
+}
+
 void ClientSession::GetSelfSignalingAddr(QString& addr, uint16_t& port) const {
     addr.clear();
     port = 0;
+    uint8_t natType = 0;
     {
         QReadLocker lk(&m_shared->matching.udpLock);
         auto it = m_shared->matching.udpExt.find(m_info.npid);
-        if (it != m_shared->matching.udpExt.end()) {
-            addr = it.value().first;
-            port = it.value().second;
+        if (it != m_shared->matching.udpExt.end() &&
+            it.value().IsFresh(QDateTime::currentMSecsSinceEpoch(), UDP_ENDPOINT_TTL_MS)) {
+            addr = it.value().addr;
+            port = it.value().port;
+            natType = it.value().natType;
         }
     }
-    if (addr.isEmpty() && m_socket)
-        addr = m_socket->peerAddress().toString();
+    if (port == 0) {
+        // Recording the TCP address with no port would look like a usable endpoint to every other
+        // member of the room while being unroutable, so the record stays empty and peers fall back
+        // to asking for the endpoint once the STUN ping does arrive.
+        addr.clear();
+        qWarning().nospace().noquote()
+            << "No STUN endpoint for " << m_info.npid << " yet (UDP "
+            << (m_shared && m_shared->config ? m_shared->config->GetMatchingUdpPort()
+                                             : QStringLiteral("?"))
+            << " unreachable from this client?); its room record will carry no P2P endpoint";
+        return;
+    }
+    qInfo().nospace().noquote() << "Signaling endpoint for " << m_info.npid << " = " << addr << ":"
+                                << port << " natType=" << natType;
 }
 
 void ClientSession::ResetMatchingRoomState(uint64_t roomId) {
@@ -467,11 +496,18 @@ ErrorType ClientSession::CmdCreateRoom(StreamExtractor& data, QByteArray& reply)
     for (const auto id : req.blocked_account_ids())
         room.blockedAccountIds.append(static_cast<uint64_t>(id));
 
-    if (!req.room_password().empty()) {
-        room.roomPassword =
-            QByteArray(req.room_password().data(), static_cast<int>(req.room_password().size()));
-    } else if (req.room_password_present()) {
-        room.roomPassword = QByteArray(Matching2::ORBIS_NP_MATCHING2_SESSION_PASSWORD_SIZE, '\0');
+    if (req.room_password_present()) {
+        // A room declared password-protected without the bytes to check against would be open to
+        // anyone who knows its id, so the request is rejected rather than silently downgraded.
+        if (req.room_password().empty())
+            return ErrorType::RoomPasswordMissing;
+        QByteArray pw(req.room_password().data(), static_cast<int>(req.room_password().size()));
+        if (IsBlankRoomPassword(pw)) {
+            qInfo() << "CreateRoom: blank session password, treating room as open";
+        } else {
+            qInfo() << "CreateRoom: session password bytes=" << pw.size();
+            room.roomPassword = std::move(pw);
+        }
     }
     if (req.has_passwd_slot_mask())
         room.passwdSlotMask = req.passwd_slot_mask();
@@ -517,6 +553,7 @@ ErrorType ClientSession::CmdCreateRoom(StreamExtractor& data, QByteArray& reply)
     owner.npid = m_info.npid;
     owner.avatarUrl = m_info.avatarUrl;
     GetSelfSignalingAddr(owner.addr, owner.port);
+    owner.natType = SelfNatType();
     owner.joinDate = MatchingTimestampUsec();
     owner.teamId = static_cast<uint8_t>(req.team_id());
     owner.flagAttr = Matching2::ORBIS_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER;
@@ -658,6 +695,30 @@ ErrorType ClientSession::CmdJoinRoom(StreamExtractor& data, QByteArray& reply) {
             return ErrorType::RoomFull;
         if (room.findByNpid(m_info.npid))
             return ErrorType::RoomAlreadyJoined;
+        if (room.roomPassword.has_value()) {
+            const QByteArray given(req.room_password().data(),
+                                   static_cast<int>(req.room_password().size()));
+            const QByteArray& expected = room.roomPassword.value();
+            const bool givenBlank = IsBlankRoomPassword(given);
+            const bool expectedBlank = IsBlankRoomPassword(expected);
+            // passwdSlotMask==0 means no slot requires the session password. MBON
+            // player-match still attaches a non-zero 8-byte pointer on create, but
+            // the search-join path sends no password.
+            const bool publicSlotsOnly = room.passwdSlotMask == 0;
+            if (given != expected && !(givenBlank && expectedBlank) &&
+                !(givenBlank && publicSlotsOnly)) {
+                qWarning().nospace().noquote()
+                    << "JoinRoom: " << m_info.npid << " password mismatch room=" << roomId
+                    << " given_len=" << given.size() << " given_blank=" << givenBlank
+                    << " stored_len=" << expected.size() << " stored_blank=" << expectedBlank
+                    << " passwdMask=" << Qt::hex << room.passwdSlotMask;
+                return ErrorType::RoomPasswordMismatch;
+            }
+            if (givenBlank && publicSlotsOnly && !expectedBlank) {
+                qInfo() << "JoinRoom:" << m_info.npid << "open public slots, skipping session "
+                        << "password room=" << roomId;
+            }
+        }
         const uint64_t accountId = static_cast<uint64_t>(m_info.userId);
         if ((!room.allowedUsers.isEmpty() && !room.allowedUsers.contains(m_info.npid)) ||
             (!room.allowedAccountIds.isEmpty() && !room.allowedAccountIds.contains(accountId)) ||
@@ -670,6 +731,7 @@ ErrorType ClientSession::CmdJoinRoom(StreamExtractor& data, QByteArray& reply) {
         joiner.npid = m_info.npid;
         joiner.avatarUrl = m_info.avatarUrl;
         GetSelfSignalingAddr(joiner.addr, joiner.port);
+        joiner.natType = SelfNatType();
         for (const auto& id : req.blocked_online_ids())
             joiner.blockedUsers.append(QString::fromStdString(id));
         for (const auto id : req.blocked_account_ids())
@@ -937,6 +999,9 @@ ErrorType ClientSession::CmdGetWorldInfoList(StreamExtractor& data, QByteArray& 
                 w->set_room_members_num(roomMembersNum);
             }
         } else {
+            qWarning() << "GetWorldInfoList: no worlds.cfg entry for" << m_matching.matchingKey
+                       << "- falling back to a single default world; titles that index a fixed "
+                          "world array will reject this list";
             QVector<uint32_t> worldIds;
             for (auto it = m_shared->matching.worldRooms.constBegin();
                  it != m_shared->matching.worldRooms.constEnd(); ++it) {
@@ -971,6 +1036,60 @@ ErrorType ClientSession::CmdGetWorldInfoList(StreamExtractor& data, QByteArray& 
     return ErrorType::NoError;
 }
 
+ErrorType ClientSession::CmdGetLobbyInfoList(StreamExtractor& data, QByteArray& reply) {
+    shadnet::GetLobbyInfoListRequest req;
+    if (!decodeProto(req, data) || data.error())
+        return ErrorType::Malformed;
+
+    const uint32_t worldId = req.world_id();
+    if (worldId == 0)
+        return ErrorType::Invalid;
+
+    uint32_t rangeStart = req.range_filter_start();
+    if (rangeStart < 1)
+        rangeStart = 1;
+    uint32_t rangeMax = req.range_filter_max();
+    if (rangeMax == 0 || rangeMax > RANGE_FILTER_MAX)
+        rangeMax = RANGE_FILTER_MAX;
+
+    uint32_t lobbiesNum = 0;
+    uint16_t serverId = 1;
+    uint32_t maxLobbyMembers = 0;
+    {
+        QReadLocker lk(&m_shared->matching.roomsLock);
+        const QVector<WorldConfig> configs =
+            m_shared->matching.worldConfigs.value(m_matching.matchingKey);
+        for (const WorldConfig& wc : configs) {
+            if (wc.worldId != worldId)
+                continue;
+            lobbiesNum = wc.lobbiesNum;
+            serverId = wc.serverId;
+            maxLobbyMembers = wc.maxLobbyMembersNum;
+            break;
+        }
+    }
+
+    shadnet::GetLobbyInfoListReply rep;
+    rep.set_range_start(rangeStart);
+    rep.set_range_total(lobbiesNum);
+
+    for (uint32_t index = rangeStart; index < rangeStart + rangeMax && index <= lobbiesNum;
+         ++index) {
+        shadnet::MatchingLobby* l = rep.add_lobbies();
+        l->set_server_id(serverId);
+        l->set_world_id(worldId);
+        l->set_lobby_id(MakeLobbyId(worldId, index));
+        l->set_max_slot(maxLobbyMembers);
+        l->set_cur_member_num(0);
+        l->set_flag_attr(0);
+    }
+
+    appendProto(reply, rep);
+    qInfo() << "GetLobbyInfoList:" << m_info.npid << "world=" << worldId << "start=" << rangeStart
+            << "of" << lobbiesNum << "returned=" << rep.lobbies_size();
+    return ErrorType::NoError;
+}
+
 ErrorType ClientSession::CmdSearchRoom(StreamExtractor& data, QByteArray& reply) {
     shadnet::SearchRoomRequest req;
     if (!decodeProto(req, data) || data.error())
@@ -983,8 +1102,8 @@ ErrorType ClientSession::CmdSearchRoom(StreamExtractor& data, QByteArray& reply)
     if (rangeStart < 1)
         rangeStart = 1;
     uint32_t rangeMax = req.range_filter_max();
-    if (rangeMax == 0 || rangeMax > 20)
-        rangeMax = 20;
+    if (rangeMax == 0 || rangeMax > RANGE_FILTER_MAX)
+        rangeMax = RANGE_FILTER_MAX;
     const QVector<uint16_t> requestedAttrIds = RequestedAttrIds(req);
 
     shadnet::SearchRoomReply rep;
@@ -1193,30 +1312,39 @@ ErrorType ClientSession::CmdRequestSignalingInfos(StreamExtractor& data, QByteAr
 
     QString targetIp;
     uint16_t targetPort = 0;
+    uint8_t targetNatType = 0;
     {
         QReadLocker lk(&m_shared->matching.udpLock);
         auto it = m_shared->matching.udpExt.find(targetNpid);
-        if (it != m_shared->matching.udpExt.end()) {
-            targetIp = it->first;
-            targetPort = it->second;
+        if (it != m_shared->matching.udpExt.end() &&
+            it.value().IsFresh(QDateTime::currentMSecsSinceEpoch(), UDP_ENDPOINT_TTL_MS)) {
+            targetIp = it.value().addr;
+            targetPort = it.value().port;
+            targetNatType = it.value().natType;
         }
     }
-    if (targetIp.isEmpty()) {
+    if (targetPort == 0) {
         QReadLocker lk(&m_shared->matching.roomsLock);
         for (auto it = m_shared->matching.rooms.constBegin();
              it != m_shared->matching.rooms.constEnd(); ++it) {
             if (it.key().first != m_matching.matchingKey)
                 continue;
             const RoomMember* tm = it.value().findByNpid(targetNpid);
-            if (tm) {
+            if (tm && tm->port != 0) {
                 targetIp = tm->addr;
                 targetPort = tm->port;
+                targetNatType = tm->natType;
                 break;
             }
         }
     }
-    if (targetIp.isEmpty())
+    // An address without a port is not an endpoint. Reporting one anyway would send the caller's
+    // handshake nowhere and leave it blaming the peer instead of the missing STUN registration.
+    if (targetIp.isEmpty() || targetPort == 0) {
+        qWarning().nospace().noquote() << "RequestSignalingInfos: " << m_info.npid << " -> "
+                                       << targetNpid << " has no registered UDP endpoint";
         return ErrorType::NotFound;
+    }
 
     uint16_t targetMemberId = 0;
     {
@@ -1241,6 +1369,7 @@ ErrorType ClientSession::CmdRequestSignalingInfos(StreamExtractor& data, QByteAr
     rep.set_target_ip(targetIp.toStdString());
     rep.set_target_port(targetPort);
     rep.set_target_member_id(targetMemberId);
+    rep.set_target_nat_type(targetNatType);
     appendProto(reply, rep);
 
     return ErrorType::NoError;

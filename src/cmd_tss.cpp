@@ -25,12 +25,18 @@ ErrorType ClientSession::CmdTssGetData(StreamExtractor& data, QByteArray& reply)
 
     shadnet::TssGetDataResponse resp;
     if (!entry.exists) {
+        // Titles that gate online play on title storage (MBON reads slot 1) treat a zero
+        // contentLength as a load failure, so name the missing file instead of staying silent.
+        qWarning() << "CmdTssGetData:" << m_info.npid << "slot" << slot << "has no"
+                   << TssFiles::Path(cid, slot);
         resp.set_statuscodetype(0); // OK
         resp.set_lastmodified(0);
         resp.set_contentlength(0);
         appendProto(reply, resp);
         return ErrorType::NoError;
     }
+    qInfo() << "CmdTssGetData:" << m_info.npid << "comId" << cid << "slot" << slot << "size"
+            << entry.data.size();
     const int64_t cap = TssFiles::MaxSizeForSlot(slot);
     if (entry.data.size() > cap) {
         qWarning() << "CmdTssGetData: slot" << slot << "file is" << entry.data.size()

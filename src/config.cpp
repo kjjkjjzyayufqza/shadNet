@@ -101,10 +101,12 @@ void ConfigManager::Parse(const QString& path) {
     m_host = str("Host", "127.0.0.1");
     m_unsecured_port = str("UnsecuredPort", "31313");
     m_matchingUdpPort = str("MatchingUdpPort", "31314");
+    m_stunAltPort = str("StunAltPort", "31316");
     m_webapiPort = str("WebApiPort", "31315");
     m_statsEnabled = boolean("StatsEnabled", true);
     m_matching2Enabled = boolean("Matching2Enabled", false);
     m_trophiesEnabled = boolean("TrophiesEnabled", true);
+    m_signalingRelayEnabled = boolean("SignalingRelayEnabled", true);
     m_memberApiEnabled = boolean("MemberApiEnabled", false);
     m_memberApiHost = str("MemberApiHost", "127.0.0.1");
     m_memberApiPort = str("MemberApiPort", "31360");

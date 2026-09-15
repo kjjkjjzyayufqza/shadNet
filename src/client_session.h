@@ -240,6 +240,7 @@ public:
     ErrorType CmdSetRoomDataExternal(StreamExtractor& data, QByteArray& reply);
     ErrorType CmdKickoutRoomMember(StreamExtractor& data, QByteArray& reply);
     ErrorType CmdGetWorldInfoList(StreamExtractor& data, QByteArray& reply);
+    ErrorType CmdGetLobbyInfoList(StreamExtractor& data, QByteArray& reply);
 
     // Trophies (cmd_trophy.cpp)
     ErrorType CmdUnlockTrophy(StreamExtractor& data);
@@ -308,6 +309,8 @@ private:
     void CleanupMatchingOnDisconnect();
     void ResetMatchingRoomState(uint64_t roomId);
     void GetSelfSignalingAddr(QString& addr, uint16_t& port) const;
+    // NAT class the STUN listeners established for this account, 0 while undetermined.
+    uint8_t SelfNatType() const;
 
     QTcpSocket* m_socket;
     bool m_isSsl = true;

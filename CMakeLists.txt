@@ -105,6 +105,17 @@ set(SOURCES
 
 add_executable(shadnet ${SOURCES})
 
+# worlds.cfg is loaded from the executable directory (main() chdirs there).
+# Copy it on every build so running from build/ does not silently fall back
+# to a single default world.
+add_custom_command(TARGET shadnet POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/worlds.cfg"
+        "$<TARGET_FILE_DIR:shadnet>/worlds.cfg"
+    COMMENT "Copy worlds.cfg next to shadnet.exe"
+    VERBATIM
+)
+
 target_include_directories(shadnet PRIVATE
     src
     "${PROTO_OUT}"                                    

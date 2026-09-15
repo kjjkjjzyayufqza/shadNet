@@ -65,6 +65,7 @@ enum class CommandType : uint16_t {
     GetUserInfoList = 113,
     GetRoomMemberDataExternalList = 114,
     SendRoomMessage = 115,
+    GetLobbyInfoList = 116,
     // TUS
     TusSetData = 201,
     TusGetData = 202,

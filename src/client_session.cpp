@@ -261,6 +261,8 @@ ErrorType ClientSession::DispatchCommand(CommandType cmd, StreamExtractor& se, Q
         return CmdKickoutRoomMember(se, reply);
     case CommandType::GetWorldInfoList:
         return CmdGetWorldInfoList(se, reply);
+    case CommandType::GetLobbyInfoList:
+        return CmdGetLobbyInfoList(se, reply);
     case CommandType::GetScoreAccountId:
         return CmdGetScoreAccountId(se, reply);
     case CommandType::GetScoreGameDataByAccId:
@@ -337,10 +339,14 @@ ErrorType ClientSession::CmdGetServerFeatures(QByteArray& reply) {
     rep.set_matching2_enabled(m_shared && m_shared->config &&
                               m_shared->config->IsMatching2Enabled());
     rep.set_trophies_enabled(TrophiesEnabled());
+    rep.set_signaling_relay_enabled(m_shared && m_shared->matching.signalingRelay.load());
+    rep.set_stun_alt_port(m_shared ? m_shared->matching.stunAltPort.load() : 0);
     appendProto(reply, rep);
     qInfo() << "GetServerFeatures:" << m_info.npid
             << "matching2_enabled=" << rep.matching2_enabled()
-            << "trophies_enabled=" << rep.trophies_enabled();
+            << "trophies_enabled=" << rep.trophies_enabled()
+            << "signaling_relay=" << rep.signaling_relay_enabled()
+            << "stun_alt_port=" << rep.stun_alt_port();
     return ErrorType::NoError;
 }
 
