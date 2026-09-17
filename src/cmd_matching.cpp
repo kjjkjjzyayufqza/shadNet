@@ -42,8 +42,7 @@ bool AttrWanted(const QVector<uint16_t>& requestedAttrIds, uint16_t attrId) {
 // zeros, even for an open player-match room. Join from search leaves the pointer
 // null, so a byte-for-byte compare of "8 zeros" vs "empty" rejects a public room.
 bool IsBlankRoomPassword(const QByteArray& pw) {
-    return pw.isEmpty() ||
-           std::all_of(pw.cbegin(), pw.cend(), [](char c) { return c == '\0'; });
+    return pw.isEmpty() || std::all_of(pw.cbegin(), pw.cend(), [](char c) { return c == '\0'; });
 }
 
 template <typename Request>
