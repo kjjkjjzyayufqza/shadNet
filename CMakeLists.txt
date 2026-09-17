@@ -105,14 +105,17 @@ set(SOURCES
 
 add_executable(shadnet ${SOURCES})
 
-# worlds.cfg is loaded from the executable directory (main() chdirs there).
-# Copy it on every build so running from build/ does not silently fall back
-# to a single default world.
+# worlds.cfg and scoreboards.cfg are loaded from the executable directory (main() chdirs there).
+# Copy them on every build so running from build/ does not silently fall back to a single default
+# world, or to board defaults with no upload limits.
 add_custom_command(TARGET shadnet POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/worlds.cfg"
         "$<TARGET_FILE_DIR:shadnet>/worlds.cfg"
-    COMMENT "Copy worlds.cfg next to shadnet.exe"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/scoreboards.cfg"
+        "$<TARGET_FILE_DIR:shadnet>/scoreboards.cfg"
+    COMMENT "Copy worlds.cfg and scoreboards.cfg next to shadnet.exe"
     VERBATIM
 )
 
@@ -134,3 +137,4 @@ target_link_libraries(shadnet PRIVATE
 
 
 install(TARGETS shadnet RUNTIME DESTINATION bin)
+install(FILES worlds.cfg scoreboards.cfg DESTINATION bin)

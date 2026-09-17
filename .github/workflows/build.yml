@@ -160,6 +160,10 @@ jobs:
       run: |
         New-Item -ItemType Directory -Force staging
         Copy-Item ${{ github.workspace }}/build/shadnet.exe staging/
+        # Matchmaking worlds and scoreboard limits are loaded from the exe directory.
+        # GVS/MBON abort if worlds.cfg is missing (single-world fallback is too short).
+        Copy-Item ${{ github.workspace }}/worlds.cfg staging/
+        Copy-Item ${{ github.workspace }}/scoreboards.cfg staging/
         # Copies Qt6 DLLs, sqldrivers/qsqlite.dll, and VC runtime alongside the exe
         windeployqt6 --release --no-translations staging/shadnet.exe
 
@@ -232,7 +236,11 @@ jobs:
       run: cmake --build ${{ github.workspace }}/build --config ${{ env.BUILD_TYPE }} --parallel $(nproc)
 
     - name: Package
-      run: tar czf shadnet-linux64.tar.gz -C ${{ github.workspace }}/build shadnet
+      run: |
+        cp "${{ github.workspace }}/worlds.cfg" "${{ github.workspace }}/build/worlds.cfg"
+        cp "${{ github.workspace }}/scoreboards.cfg" "${{ github.workspace }}/build/scoreboards.cfg"
+        tar czf shadnet-linux64.tar.gz -C ${{ github.workspace }}/build \
+          shadnet worlds.cfg scoreboards.cfg
 
     - name: Upload Linux artifact
       uses: actions/upload-artifact@v4
