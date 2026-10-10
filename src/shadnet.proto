@@ -361,6 +361,9 @@ message JoinRoomRequest {
     // The password the joiner typed. room_password_present only says a password was supplied, so
     // without these bytes the server has nothing to compare and the room is open to anyone.
     bytes  room_password        = 12;
+    // Team the joiner asked for. join_group_label_present alone cannot place them: a 2v2 room
+    // has two labeled groups, and without the bytes every joiner stays in group 0.
+    bytes  join_group_label     = 13;
 }
 
 message LeaveRoomRequest {
@@ -550,9 +553,38 @@ message SendRoomMessageRequest {
     repeated uint32 dst_member_ids = 3;
     bytes msg = 4;
     int32 option = 5;
+    // sceNpMatching2SendRoomChatMessage rather than SendRoomMessage. The two share this command
+    // because the wire payload is identical; the flag is echoed on the notification so the
+    // receiver raises the right room-message event.
+    bool is_chat = 6;
 }
 
 message SendRoomMessageReply { uint64 room_id = 1; }
+
+// SetRoomMemberDataInternal (command 117). member_id 0 targets the sender. team_id is only
+// applied when has_team_id is set, so a title that only updates its blob does not reset the
+// team assignment it was given when it joined.
+message SetRoomMemberDataInternalRequest {
+    uint32 req_id      = 1;
+    uint64 room_id     = 2;
+    uint32 member_id   = 3;
+    uint32 team_id     = 4;
+    bool   has_team_id = 5;
+    uint32 flag_filter = 6;
+    uint32 flag_attr   = 7;
+    repeated MatchingBinAttr bin_attrs = 8;
+}
+message SetRoomMemberDataInternalReply { uint64 room_id = 1; uint32 member_id = 2; }
+
+// SetSignalingOptParam (command 118): the room-wide signaling topology the owner picked.
+message SetSignalingOptParamRequest {
+    uint32 req_id         = 1;
+    uint64 room_id        = 2;
+    uint32 signaling_type = 3;
+    uint32 signaling_flag = 4;
+    uint32 hub_member_id  = 5;
+}
+message SetSignalingOptParamReply { uint64 room_id = 1; }
 
 
 message GetTokenReply {
@@ -588,6 +620,10 @@ message NotifyRoomEvent {
     uint32                   flags       = 8;
     bool                     has_passwd_mask = 9;
     uint64                   passwd_slot_mask = 10;
+    // Only meaningful for ROOM_EVENT_UPDATED_SIGNALING_OPT_PARAM (0x1108).
+    uint32                   signaling_type = 11;
+    uint32                   signaling_flag = 12;
+    uint32                   signaling_hub_member_id = 13;
 }
 
 // NotificationType::RoomMessage (11) maps onto
@@ -603,6 +639,7 @@ message NotifyRoomMessage {
     uint64 src_account_id = 8;
     uint32 src_platform = 9;
     bytes msg = 10;
+    bool is_chat = 11;
 }
 
 // Title User Storage (TUS) 
@@ -808,4 +845,28 @@ message SyncTrophiesReply {
 
 message SetClientVersionRequest {
     string version = 1; 
+}
+
+// In-game messages (libSceNpManager sceNpInGameMessage*)
+//
+// A short, title-defined payload the server relays to named accounts. It never touches the P2P
+// path: titles use it for invites, join-in requests and cross-room notices, which must reach a
+// player who is not in the sender's room. A target that is offline is reported back per target
+// rather than failing the whole send, so the caller can tell "nobody home" from "rejected".
+//
+// Delivery reuses the NP WebApi push-event notification with the data type "inGameMessage",
+// which is the channel the retail libSceNpManager sends and receives on.
+message SendInGameMessageRequest {
+    repeated uint64 target_account_ids = 1;
+    bytes           message            = 2;
+    uint32          message_type       = 3;
+}
+
+message InGameMessageTargetResult {
+    uint64 account_id = 1;
+    bool   delivered  = 2;
+}
+
+message SendInGameMessageReply {
+    repeated InGameMessageTargetResult results = 1;
 }

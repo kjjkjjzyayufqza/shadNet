@@ -221,6 +221,21 @@ std::pair<bool, uint64_t> ScoreCache::GetGameDataId(const QString& comId, uint32
     return {true, *e.dataId};
 }
 
+uint32_t ScoreCache::CountGameData(const QString& comId, uint32_t boardId, int64_t userId) const {
+    QReadLocker lk(&m_lock);
+    if (!m_tables.contains(comId) || !m_tables[comId].contains(boardId))
+        return 0;
+    const ScoreTableCache& t = m_tables[comId][boardId];
+    if (!t.lookup.contains(userId))
+        return 0;
+    uint32_t n = 0;
+    for (auto it = t.lookup[userId].begin(); it != t.lookup[userId].end(); ++it) {
+        if (t.sorted[it.value()].dataId.has_value())
+            ++n;
+    }
+    return n;
+}
+
 int ScoreCache::RemoveUser(int64_t userId) {
     QWriteLocker lk(&m_lock);
     int removed = 0;

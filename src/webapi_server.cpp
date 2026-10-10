@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "webapi_server.h"
 
+#include <QDateTime>
 #include <QDebug>
+#include <QHash>
 #include <QHostAddress>
 #include <QHttpServerRequest>
 #include <QHttpServerResponder>
 #include <QHttpServerResponse>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <webapi_routes_users.h>
 #include "webapi_auth.h"
 #include "webapi_routes_identity.h"
@@ -67,9 +71,36 @@ void WebApiServer::RegisterRoutes() {
                   [](const QHttpServerRequest&) {
                       return QHttpServerResponse(QHttpServerResponse::StatusCode::Ok);
                   });
+    // Bandwidth probe. Both titles fetch this once per session to size their netcode, but the
+    // route hands out 2 MiB to anyone who asks, so left open it is the cheapest way to pull an
+    // unbounded amount of traffic out of the server. One download per address per window is all
+    // the probe needs.
     m_http->route("/networktest/get_2m", QHttpServerRequest::Method::Get,
-                  [](const QHttpServerRequest&) {
+                  [](const QHttpServerRequest& req) -> QHttpServerResponse {
+                      static constexpr qint64 kWindowMs = 10'000;
+                      static QMutex mutex;
+                      static QHash<QString, qint64> lastServed;
+
+                      const QString peer = req.remoteAddress().toString();
+                      const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                      {
+                          QMutexLocker lock(&mutex);
+                          // Drop entries that aged out, so a long-running server does not
+                          // accumulate one row per address that ever probed it.
+                          for (auto it = lastServed.begin(); it != lastServed.end();) {
+                              it = (now - it.value() > kWindowMs) ? lastServed.erase(it) : ++it;
+                          }
+                          const auto it = lastServed.find(peer);
+                          if (it != lastServed.end()) {
+                              qWarning() << "WebAPI: networktest/get_2m rate limited for" << peer;
+                              return QHttpServerResponse{
+                                  QHttpServerResponse::StatusCode::TooManyRequests};
+                          }
+                          lastServed.insert(peer, now);
+                      }
+
                       static const QByteArray payload(2 * 1024 * 1024, '\0');
+                      qInfo() << "WebAPI: networktest/get_2m served to" << peer;
                       return QHttpServerResponse{"application/octet-stream", payload,
                                                  QHttpServerResponse::StatusCode::Ok};
                   });

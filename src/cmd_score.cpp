@@ -93,6 +93,32 @@ ErrorType ClientSession::CmdRecordScoreData(StreamExtractor& data) {
 
     QString cid = comIdStr(comId);
 
+    // Board limits are reported to the client by GetBoardInfo and were never applied here, so a
+    // client that ignores them (or lies) could store blobs without bound. Replays are the large
+    // objects on this server; this is the only place their size and count are decided.
+    auto sdbLimits = scoreDb(m_db.get());
+    auto cfg = sdbLimits.GetBoard(cid, req.boardid(), true);
+    if (!cfg)
+        return ErrorType::DbFail;
+    if (static_cast<uint64_t>(rawData.size()) > cfg->uploadSizeLimit) {
+        qWarning() << "RecordScoreData:" << m_info.npid << "board" << req.boardid() << "blob"
+                   << rawData.size() << "exceeds uploadSizeLimit" << cfg->uploadSizeLimit;
+        return ErrorType::TooLarge;
+    }
+    {
+        // The replacement case does not consume a new slot: the existing blob for this
+        // (board, user, pcId) is removed below, so only a genuinely new entry is counted.
+        const auto [hasExisting, existingId] =
+            m_shared->scoreCache->GetGameDataId(cid, req.boardid(), m_info.userId, req.pcid());
+        const uint32_t held =
+            m_shared->scoreCache->CountGameData(cid, req.boardid(), m_info.userId);
+        if (!hasExisting && cfg->uploadNumLimit > 0 && held >= cfg->uploadNumLimit) {
+            qWarning() << "RecordScoreData:" << m_info.npid << "board" << req.boardid() << "holds"
+                       << held << "blobs, uploadNumLimit" << cfg->uploadNumLimit;
+            return ErrorType::QuotaExceeded;
+        }
+    }
+
     auto cacheErr = m_shared->scoreCache->ContainsScoreWithNoData(cid, req.boardid(), m_info.userId,
                                                                   req.pcid(), req.score());
     if (cacheErr) {
@@ -106,6 +132,11 @@ ErrorType ClientSession::CmdRecordScoreData(StreamExtractor& data) {
         }
     }
 
+    // Capture the blob this upload replaces before the cache forgets it, so its file can be
+    // deleted afterwards instead of sitting on disk with nothing referencing it.
+    const auto [hadPrevious, previousFileId] =
+        m_shared->scoreCache->GetGameDataId(cid, req.boardid(), m_info.userId, req.pcid());
+
     uint64_t fileId = m_shared->scoreFiles->Create(rawData);
     if (fileId == 0)
         return ErrorType::DbFail;
@@ -117,6 +148,14 @@ ErrorType ClientSession::CmdRecordScoreData(StreamExtractor& data) {
 
     auto sdb = scoreDb(m_db.get());
     sdb.SetScoreDataId(cid, req.boardid(), m_info.userId, req.pcid(), req.score(), fileId);
+
+    if (hadPrevious && previousFileId != 0 && previousFileId != fileId) {
+        m_shared->scoreFiles->Remove(previousFileId);
+    }
+
+    qInfo() << "RecordScoreData:" << m_info.npid << "board" << req.boardid()
+            << "pcId=" << req.pcid() << "score=" << req.score() << "bytes=" << rawData.size()
+            << "fileId=" << fileId << "replaced=" << (hadPrevious ? previousFileId : 0);
     return ErrorType::NoError;
 }
 

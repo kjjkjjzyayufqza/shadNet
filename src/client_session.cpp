@@ -263,6 +263,12 @@ ErrorType ClientSession::DispatchCommand(CommandType cmd, StreamExtractor& se, Q
         return CmdGetWorldInfoList(se, reply);
     case CommandType::GetLobbyInfoList:
         return CmdGetLobbyInfoList(se, reply);
+    case CommandType::SetRoomMemberDataInternal:
+        return CmdSetRoomMemberDataInternal(se, reply);
+    case CommandType::SetSignalingOptParam:
+        return CmdSetSignalingOptParam(se, reply);
+    case CommandType::SendInGameMessage:
+        return CmdSendInGameMessage(se, reply);
     case CommandType::GetScoreAccountId:
         return CmdGetScoreAccountId(se, reply);
     case CommandType::GetScoreGameDataByAccId:

@@ -11,6 +11,11 @@ enum class ScoreDbError { Internal, NotBest, Invalid };
 
 class ScoreDb {
 public:
+    // Reserved board id holding the per-title defaults a board inherits when the game asks for
+    // one that was never configured. Titles number their boards from 1 and none comes anywhere
+    // near this value, so the row cannot collide with a real board.
+    static constexpr uint32_t DEFAULT_BOARD_ID = 0xFFFFFFFFu;
+
     explicit ScoreDb(const QSqlDatabase& db) : m_db(db) {}
 
     // Board configuration

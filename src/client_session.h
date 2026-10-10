@@ -241,6 +241,11 @@ public:
     ErrorType CmdKickoutRoomMember(StreamExtractor& data, QByteArray& reply);
     ErrorType CmdGetWorldInfoList(StreamExtractor& data, QByteArray& reply);
     ErrorType CmdGetLobbyInfoList(StreamExtractor& data, QByteArray& reply);
+    ErrorType CmdSetRoomMemberDataInternal(StreamExtractor& data, QByteArray& reply);
+    ErrorType CmdSetSignalingOptParam(StreamExtractor& data, QByteArray& reply);
+
+    // In-game messages (cmd_ingame_message.cpp)
+    ErrorType CmdSendInGameMessage(StreamExtractor& data, QByteArray& reply);
 
     // Trophies (cmd_trophy.cpp)
     ErrorType CmdUnlockTrophy(StreamExtractor& data);
@@ -311,6 +316,13 @@ private:
     void GetSelfSignalingAddr(QString& addr, uint16_t& port) const;
     // NAT class the STUN listeners established for this account, 0 while undetermined.
     uint8_t SelfNatType() const;
+
+    // In-game message rate limiting. The command relays a client-supplied payload to arbitrary
+    // accounts, which is exactly the shape of a spam relay, so a session gets a fixed budget per
+    // window and nothing more. Kept per session rather than per account: a burst only costs the
+    // session that produced it.
+    qint64 m_igmWindowStartMs = 0;
+    int m_igmSentInWindow = 0;
 
     QTcpSocket* m_socket;
     bool m_isSsl = true;

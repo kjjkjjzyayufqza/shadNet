@@ -7,7 +7,13 @@
 #include "score_db.h"
 
 bool ScoreDb::CreateBoard(const QString& comId, uint32_t boardId) {
+    // Inherit whatever scoreboards.cfg declared for this title's unlisted boards. Both GVS and
+    // MBON number their boards at runtime and the ids are not known ahead of time, so a per-title
+    // default is the only way to give their boards real upload limits.
     ScoreBoardConfig def;
+    if (auto inherited = GetBoard(comId, DEFAULT_BOARD_ID, false)) {
+        def = *inherited;
+    }
     return SetBoard(comId, boardId, def);
 }
 
@@ -59,8 +65,12 @@ std::optional<ScoreBoardConfig> ScoreDb::GetBoard(const QString& comId, uint32_t
 QVector<std::pair<QPair<QString, uint32_t>, ScoreBoardConfig>> ScoreDb::AllBoards() {
     QVector<std::pair<QPair<QString, uint32_t>, ScoreBoardConfig>> result;
     QSqlQuery q(m_db);
-    q.exec("SELECT communication_id,board_id,rank_limit,update_mode,sort_mode,"
-           "upload_num_limit,upload_size_limit FROM score_table");
+    // The defaults row is configuration, not a board: it has no scores and must not be preloaded
+    // into the live cache or reported as a leaderboard.
+    q.prepare("SELECT communication_id,board_id,rank_limit,update_mode,sort_mode,"
+              "upload_num_limit,upload_size_limit FROM score_table WHERE board_id<>?");
+    q.addBindValue(DEFAULT_BOARD_ID);
+    q.exec();
     while (q.next()) {
         ScoreBoardConfig c;
         c.rankLimit = q.value(2).toUInt();

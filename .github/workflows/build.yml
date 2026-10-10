@@ -164,6 +164,9 @@ jobs:
         # GVS/MBON abort if worlds.cfg is missing (single-world fallback is too short).
         Copy-Item ${{ github.workspace }}/worlds.cfg staging/
         Copy-Item ${{ github.workspace }}/scoreboards.cfg staging/
+        # GVS login gates on TSS slot 0; MBON login gates on TSS slot 1. Empty tss_data
+        # returns contentLength=0 and those titles never leave the sign-in screen.
+        Copy-Item ${{ github.workspace }}/tss_data staging/tss_data -Recurse
         # Copies Qt6 DLLs, sqldrivers/qsqlite.dll, and VC runtime alongside the exe
         windeployqt6 --release --no-translations staging/shadnet.exe
 
@@ -239,8 +242,10 @@ jobs:
       run: |
         cp "${{ github.workspace }}/worlds.cfg" "${{ github.workspace }}/build/worlds.cfg"
         cp "${{ github.workspace }}/scoreboards.cfg" "${{ github.workspace }}/build/scoreboards.cfg"
+        mkdir -p "${{ github.workspace }}/build/tss_data"
+        cp -a "${{ github.workspace }}/tss_data/." "${{ github.workspace }}/build/tss_data/"
         tar czf shadnet-linux64.tar.gz -C ${{ github.workspace }}/build \
-          shadnet worlds.cfg scoreboards.cfg
+          shadnet worlds.cfg scoreboards.cfg tss_data
 
     - name: Upload Linux artifact
       uses: actions/upload-artifact@v4

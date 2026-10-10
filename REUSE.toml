@@ -9,6 +9,7 @@ path = [
     "README.md",
     "scoreboards.cfg",
     "worlds.cfg",
+    "tss_data/*.tss",
     "CMakeLists.txt",
     "CMakeUserPresets.json",
     "clientsample/CMakeLists.txt",

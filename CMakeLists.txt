@@ -64,6 +64,8 @@ set(SOURCES
     # Matchmaking
     src/matching.h
     src/cmd_matching.cpp
+    # In-game message relay (libSceNpManager sceNpInGameMessage*)
+    src/cmd_ingame_message.cpp
     src/stun_server.h
     src/stun_server.cpp
     # WebAPI HTTP/JSON listener
@@ -105,9 +107,10 @@ set(SOURCES
 
 add_executable(shadnet ${SOURCES})
 
-# worlds.cfg and scoreboards.cfg are loaded from the executable directory (main() chdirs there).
-# Copy them on every build so running from build/ does not silently fall back to a single default
-# world, or to board defaults with no upload limits.
+# worlds.cfg, scoreboards.cfg and tss_data/ are loaded from the executable directory
+# (main() chdirs there). Copy them on every build so running from build/ does not silently
+# fall back to a single default world, board defaults with no upload limits, or empty title
+# storage (GVS login waits forever on TSS slot 0; MBON loops if slot 1 is missing).
 add_custom_command(TARGET shadnet POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/worlds.cfg"
@@ -115,7 +118,12 @@ add_custom_command(TARGET shadnet POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/scoreboards.cfg"
         "$<TARGET_FILE_DIR:shadnet>/scoreboards.cfg"
-    COMMENT "Copy worlds.cfg and scoreboards.cfg next to shadnet.exe"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "$<TARGET_FILE_DIR:shadnet>/tss_data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_SOURCE_DIR}/tss_data"
+        "$<TARGET_FILE_DIR:shadnet>/tss_data"
+    COMMENT "Copy worlds.cfg, scoreboards.cfg and tss_data next to shadnet.exe"
     VERBATIM
 )
 
@@ -138,3 +146,4 @@ target_link_libraries(shadnet PRIVATE
 
 install(TARGETS shadnet RUNTIME DESTINATION bin)
 install(FILES worlds.cfg scoreboards.cfg DESTINATION bin)
+install(DIRECTORY tss_data DESTINATION bin)

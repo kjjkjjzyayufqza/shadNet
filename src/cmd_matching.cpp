@@ -160,7 +160,8 @@ uint64_t GroupPasswordSlotMask(const Room& room, uint64_t validSlots) {
     uint16_t slotBase = 0;
     for (const auto& group : room.groups) {
         const uint32_t slotCount = group.slotNum == 0 ? room.maxSlot : group.slotNum;
-        for (uint32_t i = 0; i < slotCount && slotBase < room.maxSlot; ++i, ++slotBase) {
+        for (uint32_t i = 0; i < slotCount && slotBase < room.maxSlot && slotBase < 64;
+             ++i, ++slotBase) {
             if (group.withPassword)
                 mask |= 1ull << slotBase;
         }
@@ -183,6 +184,67 @@ void RecomputeRoomSlotCounts(Room& room) {
     room.privateSlots = CountSlots(privateSlots);
     room.openPublicSlots = CountSlots(publicSlots & ~joinedSlots);
     room.openPrivateSlots = CountSlots(privateSlots & ~joinedSlots);
+}
+
+bool IsBlankGroupLabel(const QByteArray& label) {
+    for (const char c : label) {
+        if (c != '\0')
+            return false;
+    }
+    return true;
+}
+
+uint32_t GroupCapacity(const Room& room, const RoomGroup& group) {
+    if (group.slotNum != 0)
+        return group.slotNum;
+    return room.maxSlot;
+}
+
+bool GroupIsFull(const Room& room, const RoomGroup& group) {
+    const uint32_t cap = GroupCapacity(room, group);
+    return cap != 0 && group.numMembers >= cap;
+}
+
+void ReleaseMemberGroup(Room& room, uint8_t groupId) {
+    if (groupId == 0)
+        return;
+    for (auto& group : room.groups) {
+        if (group.groupId == groupId && group.numMembers > 0) {
+            --group.numMembers;
+            return;
+        }
+    }
+}
+
+// Places the member in the team they named, or the first team that still has a seat when they
+// named none. A miss does not reject the join: the title is already past the room-full check, and
+// an error code it does not recognise is what makes the lobby abort once the seats look taken.
+void AssignMemberGroup(Room& room, RoomMember& member, const QByteArray& label) {
+    if (room.groups.isEmpty())
+        return;
+
+    RoomGroup* chosen = nullptr;
+    if (!IsBlankGroupLabel(label)) {
+        for (auto& group : room.groups) {
+            if (group.label && *group.label == label && !GroupIsFull(room, group)) {
+                chosen = &group;
+                break;
+            }
+        }
+    }
+    if (!chosen) {
+        for (auto& group : room.groups) {
+            if (!GroupIsFull(room, group)) {
+                chosen = &group;
+                break;
+            }
+        }
+    }
+    if (!chosen)
+        return;
+
+    member.groupId = chosen->groupId;
+    ++chosen->numMembers;
 }
 
 void ResetLocalMatchingRoomState(MatchingSessionState& matching) {
@@ -671,6 +733,18 @@ ErrorType ClientSession::CmdCreateRoom(StreamExtractor& data, QByteArray& reply)
             << "passwdMask=" << Qt::hex << room.passwdSlotMask << "world=" << room.worldId
             << "lobby=" << room.lobbyId << "key=" << m_matching.matchingKey << "flags=" << Qt::hex
             << m_matching.roomFlags << Qt::dec;
+    // The searchable attributes are what a later SearchRoom has to match. Logging them at the
+    // moment the room is created is what makes a "search found nothing" comparable against
+    // something: the reject lines from RoomMatchesFilters name an attribute id, and this is where
+    // its value came from.
+    for (const auto& slot : room.searchIntAttr) {
+        if (slot.set)
+            qInfo() << "  Room" << rid << "searchIntAttr id=" << Qt::hex << slot.attrId << Qt::dec
+                    << "value=" << slot.value;
+    }
+    if (room.searchBinAttr.set)
+        qInfo() << "  Room" << rid << "searchBinAttr id=" << Qt::hex << room.searchBinAttr.attrId
+                << Qt::dec << "bytes=" << room.searchBinAttr.data.size();
     return ErrorType::NoError;
 }
 
@@ -746,6 +820,9 @@ ErrorType ClientSession::CmdJoinRoom(StreamExtractor& data, QByteArray& reply) {
         }
         joiner.joinDate = MatchingTimestampUsec();
         joiner.teamId = static_cast<uint8_t>(req.team_id());
+        const QByteArray joinLabel(req.join_group_label().data(),
+                                   static_cast<int>(req.join_group_label().size()));
+        AssignMemberGroup(room, joiner, joinLabel);
         if (req.member_bin_attrs_size() > 0) {
             const auto& a = req.member_bin_attrs(0);
             joiner.memberBinAttr.set = true;
@@ -816,6 +893,11 @@ ErrorType ClientSession::CmdLeaveRoom(StreamExtractor& data, QByteArray& reply) 
     uint16_t myMemberId = 0;
     bool wasOwner = false;
     bool roomDestroyed = false;
+    // Carried out of the lock so the new owner can be announced: the remaining members keep
+    // talking to whoever they believe owns the room, and a room whose owner just walked out
+    // without telling anyone leaves them addressing a member that is gone.
+    RoomMember newOwnerMember;
+    bool ownerChanged = false;
 
     {
         QWriteLocker lk(&m_shared->matching.roomsLock);
@@ -829,10 +911,12 @@ ErrorType ClientSession::CmdLeaveRoom(StreamExtractor& data, QByteArray& reply) 
             return ErrorType::RoomMissing;
         myMemberId = me->memberId;
         wasOwner = (myMemberId == room.ownerMemberId);
+        const uint8_t leftGroup = me->groupId;
 
         const uint32_t worldId = room.worldId;
         const uint64_t lobbyId = room.lobbyId;
 
+        ReleaseMemberGroup(room, leftGroup);
         room.removeMember(myMemberId);
         room.ownerSuccession.removeAll(myMemberId);
 
@@ -860,8 +944,11 @@ ErrorType ClientSession::CmdLeaveRoom(StreamExtractor& data, QByteArray& reply) 
                 if (newOwner == 0)
                     newOwner = room.members.begin()->memberId;
                 room.ownerMemberId = newOwner;
-                if (RoomMember* om = room.findById(newOwner))
+                if (RoomMember* om = room.findById(newOwner)) {
                     om->flagAttr |= Matching2::ORBIS_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER;
+                    newOwnerMember = *om;
+                    ownerChanged = true;
+                }
                 qInfo() << "Room" << roomId << "owner -> mid" << newOwner;
             }
         }
@@ -879,6 +966,13 @@ ErrorType ClientSession::CmdLeaveRoom(StreamExtractor& data, QByteArray& reply) 
                             Matching2::ORBIS_NP_MATCHING2_EVENT_CAUSE_LEAVE_ACTION, left);
         qDebug() << "  -> MemberLeft room=" << roomId << "npid=" << m_info.npid
                  << "mid=" << myMemberId << "to remaining members";
+        if (ownerChanged) {
+            SendRoomMemberEvent(roomId, Matching2::ORBIS_NP_MATCHING2_ROOM_EVENT_ROOM_OWNER_CHANGED,
+                                Matching2::ORBIS_NP_MATCHING2_EVENT_CAUSE_SERVER_OPERATION,
+                                newOwnerMember);
+            qDebug() << "  -> RoomOwnerChanged room=" << roomId
+                     << "newOwner=" << newOwnerMember.memberId << "to remaining members";
+        }
     }
 
     shadnet::LeaveRoomReply rep;
@@ -916,10 +1010,12 @@ ErrorType ClientSession::CmdKickoutRoomMember(StreamExtractor& data, QByteArray&
             return ErrorType::NotFound;
 
         targetNpid = targetIt->npid;
+        const uint8_t leftGroup = targetIt->groupId;
 
         if (blockKickFlag && !room.blockedUsers.contains(targetNpid))
             room.blockedUsers.append(targetNpid);
 
+        ReleaseMemberGroup(room, leftGroup);
         room.removeMember(targetMemberId);
         room.ownerSuccession.removeAll(targetMemberId);
         RecomputeRoomSlotCounts(room);
@@ -1435,6 +1531,7 @@ ErrorType ClientSession::CmdSendRoomMessage(StreamExtractor& data, QByteArray& r
     notif.set_room_id(roomId);
     notif.set_src_member_id(srcMember.memberId);
     notif.set_event(MATCHING2_ROOM_MSG_EVENT_MESSAGE);
+    notif.set_is_chat(req.is_chat());
     notif.set_cast_type(castType);
     notif.set_src_npid(srcMember.npid.toStdString());
     notif.set_src_account_id(static_cast<uint64_t>(srcMember.userId));
@@ -1449,7 +1546,8 @@ ErrorType ClientSession::CmdSendRoomMessage(StreamExtractor& data, QByteArray& r
         SendMatchingNotification(NotificationType::RoomMessage, notifPayload, targetNpid);
 
     qInfo() << "SendRoomMessage:" << m_info.npid << "room=" << roomId << "cast=" << castType
-            << "targets=" << targetNpids.size() << "bytes=" << req.msg().size();
+            << "chat=" << req.is_chat() << "targets=" << targetNpids.size()
+            << "bytes=" << req.msg().size();
 
     shadnet::SendRoomMessageReply rep;
     rep.set_room_id(roomId);
@@ -1546,6 +1644,144 @@ ErrorType ClientSession::CmdSetRoomDataInternal(StreamExtractor& data, QByteArra
     return ErrorType::NoError;
 }
 
+// SetRoomMemberDataInternal (command 117).
+//
+// This is how a title publishes per-player state inside a room - ready flag, chosen machine,
+// team, rank badge. Without it every member looks exactly the way it looked when it joined,
+// which is why an arcade or ranked lobby appears to sit there doing nothing.
+ErrorType ClientSession::CmdSetRoomMemberDataInternal(StreamExtractor& data, QByteArray& reply) {
+    shadnet::SetRoomMemberDataInternalRequest req;
+    if (!decodeProto(req, data) || data.error())
+        return ErrorType::Malformed;
+
+    const uint64_t roomId = req.room_id();
+    const uint16_t requestedMemberId = static_cast<uint16_t>(req.member_id());
+
+    RoomMember updated;
+    uint16_t memberId = 0;
+    int attrBytes = 0;
+    {
+        QWriteLocker lk(&m_shared->matching.roomsLock);
+        auto roomIt = m_shared->matching.rooms.find({m_matching.matchingKey, roomId});
+        if (roomIt == m_shared->matching.rooms.end())
+            return ErrorType::RoomMissing;
+        Room& room = roomIt.value();
+
+        // Member id 0 means "me". Anything else is only accepted when it names the caller: a
+        // member's internal data belongs to that member, and letting one client write another's
+        // would let any player forge a team change or a ready flag for the rest of the room.
+        RoomMember* self = room.findByNpidMut(m_info.npid);
+        if (!self)
+            return ErrorType::RoomMissing;
+        if (requestedMemberId != 0 && requestedMemberId != self->memberId) {
+            qWarning() << "SetRoomMemberDataInternal: " << m_info.npid << "tried to write member"
+                       << requestedMemberId << "but is member" << self->memberId;
+            return ErrorType::Unauthorized;
+        }
+        memberId = self->memberId;
+
+        const uint32_t protectedMask = Matching2::ORBIS_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER;
+        const uint32_t effFilter = req.flag_filter() & ~protectedMask;
+        self->flagAttr = (self->flagAttr & ~effFilter) | (req.flag_attr() & effFilter);
+
+        if (req.has_team_id())
+            self->teamId = static_cast<uint8_t>(req.team_id());
+
+        const uint64_t now = MatchingTimestampUsec();
+        for (int i = 0; i < req.bin_attrs_size(); ++i) {
+            const auto& a = req.bin_attrs(i);
+            const uint16_t attrId = static_cast<uint16_t>(a.attr_id());
+            if (attrId != Matching2::ORBIS_NP_MATCHING2_ROOMMEMBER_BIN_ATTR_INTERNAL_1_ID) {
+                qWarning() << "SetRoomMemberDataInternal: rejecting attr id" << attrId;
+                return ErrorType::InvalidInput;
+            }
+            if (static_cast<int>(a.data().size()) >
+                Matching2::ORBIS_NP_MATCHING2_ROOMMEMBER_BIN_ATTR_INTERNAL_MAX_SIZE) {
+                qWarning() << "SetRoomMemberDataInternal: attr too large" << a.data().size();
+                return ErrorType::TooLarge;
+            }
+            self->memberBinAttr.set = true;
+            self->memberBinAttr.attrId = attrId;
+            self->memberBinAttr.data =
+                QByteArray(a.data().data(), static_cast<int>(a.data().size()));
+            self->memberBinAttr.updateDate = now;
+            attrBytes = self->memberBinAttr.data.size();
+        }
+        updated = *self;
+    }
+
+    qInfo() << "SetRoomMemberDataInternal:" << m_info.npid << "room=" << roomId
+            << "member=" << memberId << "team=" << updated.teamId << "flagAttr=" << Qt::hex
+            << updated.flagAttr << Qt::dec << "bytes=" << attrBytes;
+
+    // 0x1107 to everyone else in the room. The sender already has the state it just wrote, and
+    // echoing it back would make a title that re-applies incoming member data fight itself.
+    // SetRoomDataInternal excludes the sender for the same reason.
+    SendRoomMemberEvent(
+        roomId, Matching2::ORBIS_NP_MATCHING2_ROOM_EVENT_UPDATED_ROOM_MEMBER_DATA_INTERNAL,
+        Matching2::ORBIS_NP_MATCHING2_EVENT_CAUSE_SERVER_OPERATION, updated, m_info.npid);
+    qDebug() << "  -> UpdatedRoomMemberDataInternal room=" << roomId << "member=" << memberId
+             << "broadcast (excl. sender)";
+
+    shadnet::SetRoomMemberDataInternalReply rep;
+    rep.set_room_id(roomId);
+    rep.set_member_id(memberId);
+    appendProto(reply, rep);
+    return ErrorType::NoError;
+}
+
+// SetSignalingOptParam (command 118): the room-wide P2P topology the owner selected. Stored on
+// the room so members that join later are told the same thing, and pushed to the members already
+// present as 0x1108.
+ErrorType ClientSession::CmdSetSignalingOptParam(StreamExtractor& data, QByteArray& reply) {
+    shadnet::SetSignalingOptParamRequest req;
+    if (!decodeProto(req, data) || data.error())
+        return ErrorType::Malformed;
+
+    const uint64_t roomId = req.room_id();
+    {
+        QWriteLocker lk(&m_shared->matching.roomsLock);
+        auto roomIt = m_shared->matching.rooms.find({m_matching.matchingKey, roomId});
+        if (roomIt == m_shared->matching.rooms.end())
+            return ErrorType::RoomMissing;
+        Room& room = roomIt.value();
+        const RoomMember* self = room.findByNpid(m_info.npid);
+        if (!self)
+            return ErrorType::RoomMissing;
+        // Topology is a room-wide decision, so only the owner may change it.
+        if (room.ownerMemberId != self->memberId)
+            return ErrorType::Unauthorized;
+
+        room.signalingType = static_cast<uint8_t>(req.signaling_type());
+        room.signalingFlag = static_cast<uint8_t>(req.signaling_flag());
+        room.signalingHubMemberId = static_cast<uint16_t>(req.hub_member_id());
+    }
+
+    qInfo() << "SetSignalingOptParam:" << m_info.npid << "room=" << roomId
+            << "type=" << req.signaling_type() << "flag=" << req.signaling_flag()
+            << "hub=" << req.hub_member_id();
+
+    {
+        shadnet::NotifyRoomEvent pb;
+        pb.set_ctx_id(m_matching.ctxId);
+        pb.set_room_id(roomId);
+        pb.set_event(Matching2::ORBIS_NP_MATCHING2_ROOM_EVENT_UPDATED_SIGNALING_OPT_PARAM);
+        pb.set_event_cause(Matching2::ORBIS_NP_MATCHING2_EVENT_CAUSE_SERVER_OPERATION);
+        pb.set_signaling_type(req.signaling_type());
+        pb.set_signaling_flag(req.signaling_flag());
+        pb.set_signaling_hub_member_id(req.hub_member_id());
+        QByteArray payload;
+        appendProto(payload, pb);
+        NotifyRoomMembers(NotificationType::RoomEvent, payload, m_matching.matchingKey, roomId,
+                          m_info.npid);
+    }
+
+    shadnet::SetSignalingOptParamReply rep;
+    rep.set_room_id(roomId);
+    appendProto(reply, rep);
+    return ErrorType::NoError;
+}
+
 ErrorType ClientSession::CmdSetRoomDataExternal(StreamExtractor& data, QByteArray& reply) {
     shadnet::SetRoomDataExternalRequest req;
     if (!decodeProto(req, data) || data.error())
@@ -1615,6 +1851,8 @@ ErrorType ClientSession::CmdSetRoomDataExternal(StreamExtractor& data, QByteArra
 void ClientSession::DoLeaveRoom(uint64_t roomId) {
     uint16_t myMemberId = 0;
     bool roomDestroyed = false;
+    RoomMember newOwnerMember;
+    bool ownerChanged = false;
 
     {
         QWriteLocker lk(&m_shared->matching.roomsLock);
@@ -1628,10 +1866,12 @@ void ClientSession::DoLeaveRoom(uint64_t roomId) {
             return;
         myMemberId = me->memberId;
         const bool wasOwner = (myMemberId == room.ownerMemberId);
+        const uint8_t leftGroup = me->groupId;
 
         const uint32_t worldId = room.worldId;
         const uint64_t lobbyId = room.lobbyId;
 
+        ReleaseMemberGroup(room, leftGroup);
         room.removeMember(myMemberId);
         room.ownerSuccession.removeAll(myMemberId);
 
@@ -1658,8 +1898,11 @@ void ClientSession::DoLeaveRoom(uint64_t roomId) {
                 if (newOwner == 0)
                     newOwner = room.members.begin()->memberId;
                 room.ownerMemberId = newOwner;
-                if (RoomMember* om = room.findById(newOwner))
+                if (RoomMember* om = room.findById(newOwner)) {
                     om->flagAttr |= Matching2::ORBIS_NP_MATCHING2_ROOMMEMBER_FLAG_ATTR_OWNER;
+                    newOwnerMember = *om;
+                    ownerChanged = true;
+                }
                 qInfo() << "Room" << roomId << "owner -> mid" << newOwner << "(disconnect)";
             }
         }
@@ -1675,6 +1918,13 @@ void ClientSession::DoLeaveRoom(uint64_t roomId) {
                             Matching2::ORBIS_NP_MATCHING2_EVENT_CAUSE_LEAVE_ACTION, left);
         qDebug() << "  -> MemberLeft room=" << roomId << "npid=" << m_info.npid
                  << "mid=" << myMemberId << "to remaining members (disconnect)";
+        if (ownerChanged) {
+            SendRoomMemberEvent(roomId, Matching2::ORBIS_NP_MATCHING2_ROOM_EVENT_ROOM_OWNER_CHANGED,
+                                Matching2::ORBIS_NP_MATCHING2_EVENT_CAUSE_SERVER_OPERATION,
+                                newOwnerMember);
+            qDebug() << "  -> RoomOwnerChanged room=" << roomId
+                     << "newOwner=" << newOwnerMember.memberId << "(disconnect)";
+        }
     }
 }
 

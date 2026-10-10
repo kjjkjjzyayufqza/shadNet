@@ -48,6 +48,8 @@ enum class CommandType : uint16_t {
     SetAppearOffline = 40,
     // Global online ID  to account ID resolution
     LookupOnlineId = 41,
+    // Relay a short title-defined payload to named accounts (libSceNpManager InGameMessage).
+    SendInGameMessage = 42,
     // Matchmaking
     ContextStart = 100,
     CreateRoom = 101,
@@ -66,6 +68,8 @@ enum class CommandType : uint16_t {
     GetRoomMemberDataExternalList = 114,
     SendRoomMessage = 115,
     GetLobbyInfoList = 116,
+    SetRoomMemberDataInternal = 117,
+    SetSignalingOptParam = 118,
     // TUS
     TusSetData = 201,
     TusGetData = 202,
@@ -141,4 +145,9 @@ enum class ErrorType : uint8_t {
     CondFail = 32,
     Unsupported = 33,
     TooLarge = 34, // TSS file on the server exceeds the slot's documented maximum
+    // The caller is sending faster than the server allows. Distinct from TooSoon, which is about
+    // a single operation being repeated, not about a sustained rate.
+    RateLimited = 35,
+    // The caller is already holding as much stored data as its quota allows.
+    QuotaExceeded = 36,
 };

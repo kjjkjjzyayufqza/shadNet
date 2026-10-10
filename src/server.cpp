@@ -160,6 +160,9 @@ bool ShadNetServer::InitScoreSystem() {
 //
 // Example:
 //   NPWR12345_00 | 1,2,3 | 100 | NORMAL_UPDATE | DESCENDING_ORDER | 10 | 6000000
+//
+// TABLE_IDS may be '*', which sets the defaults every unlisted board of that title inherits
+// when the game first touches it.
 bool ShadNetServer::LoadScoreboardsCfg(const QString& path) {
     QFile f(path);
     if (!f.exists()) {
@@ -219,7 +222,16 @@ bool ShadNetServer::LoadScoreboardsCfg(const QString& path) {
                 return false;
 
             for (const QString& ts2 : tableStrs) {
-                uint32_t tid = ts2.trimmed().toUInt(&ok);
+                const QString trimmed = ts2.trimmed();
+                // '*' sets the title's defaults instead of one board. Titles that number their
+                // boards at runtime (GUNDAM VERSUS, MAXIBOOST ON) have no fixed id list to write
+                // here, and without this their boards would always be created with the built-in
+                // defaults and no upload limits worth the name.
+                if (trimmed == "*") {
+                    sdb.SetBoard(comId, ScoreDb::DEFAULT_BOARD_ID, cfg);
+                    continue;
+                }
+                uint32_t tid = trimmed.toUInt(&ok);
                 if (!ok)
                     return false;
                 sdb.SetBoard(comId, tid, cfg);

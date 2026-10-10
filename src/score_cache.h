@@ -46,6 +46,11 @@ public:
     std::pair<bool, uint64_t> GetGameDataId(const QString& comId, uint32_t boardId, int64_t userId,
                                             int32_t charId);
 
+    // How many game-data blobs this user currently holds on the board. The board's
+    // uploadNumLimit is a cap on exactly this count, and until it is measured the limit is
+    // advertised to clients but never applied, so a single account can fill the disk.
+    uint32_t CountGameData(const QString& comId, uint32_t boardId, int64_t userId) const;
+
     // Drops every cached entry belonging to a user, across all boards, and returns
     // how many were removed.
     int RemoveUser(int64_t userId);
